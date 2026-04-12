@@ -1,0 +1,11 @@
+name = "satellite-tle-catalog"
+main = "src/index.js"
+compatibility_date = "2026-04-12"
+workers_dev = true
+
+[vars]
+CATALOG_PREFIX = "catalog/"
+
+[[r2_buckets]]
+binding = "CATALOG_BUCKET"
+bucket_name = "satellite-tle-catalog"
