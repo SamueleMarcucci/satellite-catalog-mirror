@@ -36,9 +36,20 @@ def load_snapshot_config(require_r2: bool) -> MirrorConfig:
         r2_access_key_id=env_value("R2_ACCESS_KEY_ID"),
         r2_secret_access_key=os.environ.get("R2_SECRET_ACCESS_KEY", ""),
         r2_bucket=env_value("R2_BUCKET"),
-        public_catalog_base_url=env_value("PUBLIC_SNAPSHOT_BASE_URL"),
+        public_catalog_base_url=normalize_snapshot_base_url(env_value("PUBLIC_SNAPSHOT_BASE_URL")),
         catalog_prefix=env_value("SNAPSHOT_PREFIX", "snapshots/"),
     )
+
+
+def normalize_snapshot_base_url(value: str) -> str:
+    base = value.strip().rstrip("/")
+    if not base:
+        return ""
+    if not base.startswith(("http://", "https://")):
+        base = f"https://{base}"
+    if not base.endswith("/snapshots"):
+        base = f"{base}/snapshots"
+    return base
 
 
 def catalog_url_from_env() -> str:
@@ -72,11 +83,10 @@ def upload_outputs_to_r2(config: MirrorConfig, output_dir: Path) -> None:
     client = r2_client(config)
     uploads = [
         ("manifest.json", "application/json; charset=utf-8", None, "public, max-age=30"),
-        ("current.json", "application/json; charset=utf-8", "gzip", "public, max-age=60"),
+        ("current.json", "application/json; charset=utf-8", None, "public, max-age=60"),
         ("current.json.gz", "application/gzip", None, "public, max-age=60"),
     ]
     for filename, content_type, content_encoding, cache_control in uploads:
-        stored_filename = "current.json.gz" if filename == "current.json" else filename
         extra_args = {
             "ContentType": content_type,
             "CacheControl": cache_control,
@@ -84,7 +94,7 @@ def upload_outputs_to_r2(config: MirrorConfig, output_dir: Path) -> None:
         if content_encoding:
             extra_args["ContentEncoding"] = content_encoding
         client.upload_file(
-            str(output_dir / stored_filename),
+            str(output_dir / filename),
             config.r2_bucket,
             config.r2_key(filename),
             ExtraArgs=extra_args,

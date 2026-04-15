@@ -15,7 +15,6 @@ function headersFor(kind, fileName, object) {
     headers.set("Cache-Control", "public, max-age=3600");
   } else if (fileName === "current.json") {
     headers.set("Content-Type", "application/json; charset=utf-8");
-    headers.set("Content-Encoding", "gzip");
     headers.set("Cache-Control", "public, max-age=60");
   } else if (fileName === "current.json.gz") {
     headers.set("Content-Type", "application/gzip");
@@ -38,7 +37,7 @@ function keyFor(kind, fileName, env) {
 }
 
 async function serveObject(kind, fileName, env) {
-  const storedFile = fileName === "current.3le" || fileName === "current.json" ? `${fileName}.gz` : fileName;
+  const storedFile = fileName === "current.3le" ? `${fileName}.gz` : fileName;
   const object = await env.CATALOG_BUCKET.get(keyFor(kind, storedFile, env));
   if (!object) {
     return new Response("Not found\n", { status: 404 });

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from satellite_snapshot import build_snapshot, build_snapshot_manifest, write_snapshot_outputs
+from scripts.build_snapshot import normalize_snapshot_base_url
 
 
 ISS_TLE = """ISS (ZARYA)
@@ -59,6 +60,16 @@ class SatelliteSnapshotTests(unittest.TestCase):
             self.assertTrue((output_dir / "manifest.json").exists())
             decompressed = gzip.decompress((output_dir / "current.json.gz").read_bytes())
             self.assertEqual(decompressed, (output_dir / "current.json").read_bytes())
+
+    def test_snapshot_base_url_is_fully_qualified_and_points_to_snapshots(self) -> None:
+        self.assertEqual(
+            normalize_snapshot_base_url("satellite-catalog-mirror.marcucci-sam.workers.dev"),
+            "https://satellite-catalog-mirror.marcucci-sam.workers.dev/snapshots",
+        )
+        self.assertEqual(
+            normalize_snapshot_base_url("https://satellite-catalog-mirror.marcucci-sam.workers.dev/snapshots"),
+            "https://satellite-catalog-mirror.marcucci-sam.workers.dev/snapshots",
+        )
 
 
 if __name__ == "__main__":
