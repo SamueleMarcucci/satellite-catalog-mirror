@@ -24,26 +24,77 @@ CATEGORY_LABELS = {
 }
 
 COUNTRY_LABELS = {
+    "AB": "Saudi Arabia",
+    "ALG": "Algeria",
+    "ARGN": "Argentina",
+    "ASRA": "Austria",
+    "AUS": "Australia",
+    "AZER": "Azerbaijan",
+    "BEL": "Belgium",
+    "BRAZ": "Brazil",
     "US": "United States",
+    "URY": "Uruguay",
     "PRC": "China",
     "CHN": "China",
+    "CHBZ": "China/Brazil",
     "CIS": "Commonwealth of Independent States",
     "TBD": "Unassigned",
     "UNKNOWN": "Unknown",
     "UNK": "Unknown",
     "CA": "Canada",
     "CAN": "Canada",
+    "CHLE": "Chile",
+    "COL": "Colombia",
+    "CZCH": "Czech Republic",
+    "DEN": "Denmark",
+    "ECU": "Ecuador",
+    "EGYP": "Egypt",
     "FR": "France",
     "FRA": "France",
     "GER": "Germany",
     "DEU": "Germany",
+    "GREC": "Greece",
     "IND": "India",
+    "IDSA": "Indonesia",
+    "IRAN": "Iran",
+    "IRAQ": "Iraq",
+    "ISRA": "Israel",
+    "IT": "Italy",
+    "ITLY": "Italy",
     "JPN": "Japan",
+    "KAZ": "Kazakhstan",
+    "LAOS": "Laos",
+    "LTU": "Lithuania",
+    "LUXE": "Luxembourg",
+    "MALA": "Malaysia",
+    "MEX": "Mexico",
+    "NETH": "Netherlands",
+    "NICO": "North Korea",
+    "NIG": "Nigeria",
+    "NOR": "Norway",
+    "NZ": "New Zealand",
+    "PAKI": "Pakistan",
+    "PER": "Peru",
+    "POL": "Poland",
+    "POR": "Portugal",
     "UK": "United Kingdom",
     "GB": "United Kingdom",
-    "ESA": "European Space Agency",
-    "EUME": "EUMETSAT",
+    "SAFR": "South Africa",
+    "SAUD": "Saudi Arabia",
+    "SEAL": "Sea Launch",
+    "SING": "Singapore",
+    "SKOR": "South Korea",
+    "SPN": "Spain",
+    "STCT": "Singapore/Taiwan",
+    "SWED": "Sweden",
+    "SWTZ": "Switzerland",
+    "THAI": "Thailand",
+    "TURK": "Turkey",
+    "UAE": "United Arab Emirates",
+    "UKR": "Ukraine",
     "RUS": "Russia",
+    "VENZ": "Venezuela",
+    "VTNM": "Vietnam",
 }
 
 
@@ -108,8 +159,12 @@ def country_label(value: Optional[str]) -> str:
     raw = clean_string(value)
     if raw is None:
         return "Unknown"
-    upper = raw.upper()
-    return COUNTRY_LABELS.get(upper, titleize_key(raw) if raw == upper else raw)
+    return COUNTRY_LABELS.get(raw.upper(), "Unknown")
+
+
+def is_known_country_key(value: Optional[str]) -> bool:
+    raw = clean_string(value)
+    return raw is not None and raw.upper() in COUNTRY_LABELS
 
 
 def norad_id(row: dict[str, Any]) -> Optional[int]:
@@ -256,6 +311,27 @@ def labeled_top_counts(counter: Counter[str], *, labeler, limit: int = 12) -> li
     ]
 
 
+def country_top_counts(values: list[str], *, limit: int = 20) -> list[dict[str, Any]]:
+    counter = Counter(value for value in values if is_known_country_key(value))
+    return labeled_top_counts(counter, labeler=country_label, limit=limit)
+
+
+def has_valid_orbit_for_highlight(obj: dict[str, Any]) -> bool:
+    orbit = obj.get("orbit") or {}
+    perigee = orbit.get("perigee_km")
+    apogee = orbit.get("apogee_km")
+    mean_altitude = orbit.get("mean_altitude_km")
+    if not isinstance(perigee, (int, float)) or not isinstance(apogee, (int, float)):
+        return False
+    if perigee <= 0 or apogee <= 0:
+        return False
+    if apogee < perigee:
+        return False
+    if mean_altitude is not None and (not isinstance(mean_altitude, (int, float)) or mean_altitude <= 0):
+        return False
+    return True
+
+
 def newest_satellite(active_objects: list[dict[str, Any]], debut_rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     debut_by_norad = {value: row for row in debut_rows if (value := norad_id(row)) is not None}
     candidates: list[tuple[date, int, dict[str, Any]]] = []
@@ -323,12 +399,12 @@ def build_space_track_insights(
     recent_years = sorted(launches_by_year)[-12:]
 
     highest = max(
-        (obj for obj in objects if obj["orbit"]["apogee_km"] is not None),
+        (obj for obj in objects if has_valid_orbit_for_highlight(obj)),
         key=lambda item: item["orbit"]["apogee_km"],
         default=None,
     )
     lowest_active = min(
-        (obj for obj in active_objects if obj["orbit"]["perigee_km"] is not None),
+        (obj for obj in active_objects if has_valid_orbit_for_highlight(obj)),
         key=lambda item: item["orbit"]["perigee_km"],
         default=None,
     )
@@ -361,8 +437,8 @@ def build_space_track_insights(
         "breakdowns": {
             "by_orbit": by_orbit,
             "by_category": labeled_top_counts(Counter(obj["category_key"] for obj in objects), labeler=category_label, limit=8),
-            "by_country": labeled_top_counts(Counter(obj.get("country_key") or "Unknown" for obj in objects), labeler=country_label, limit=20),
-            "by_operator": labeled_top_counts(Counter(obj.get("operator_key") or "Unknown" for obj in objects), labeler=country_label, limit=20),
+            "by_country": country_top_counts([obj.get("country_key") or "Unknown" for obj in objects], limit=20),
+            "by_operator": [],
         },
         "trends": {
             "launches_over_time": [{"year": year, "count": launches_by_year[year]} for year in recent_years],

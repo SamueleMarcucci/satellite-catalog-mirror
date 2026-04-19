@@ -166,6 +166,49 @@ class SpaceTrackInsightsTests(unittest.TestCase):
             "https://satellite-catalog-mirror.example.workers.dev/insights/current.json.gz",
         )
 
+    def test_country_breakdown_uses_only_grounded_country_labels(self) -> None:
+        insights = build_space_track_insights(
+            gp_rows=[
+                {"NORAD_CAT_ID": "1", "OBJECT_NAME": "ITALY SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+                {"NORAD_CAT_ID": "2", "OBJECT_NAME": "KOREA SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+                {"NORAD_CAT_ID": "3", "OBJECT_NAME": "ORG SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+                {"NORAD_CAT_ID": "4", "OBJECT_NAME": "COMPANY SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+            ],
+            satcat_rows=[
+                {"NORAD_CAT_ID": "1", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "IT", "PERIGEE": "500", "APOGEE": "600"},
+                {"NORAD_CAT_ID": "2", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "SKOR", "PERIGEE": "500", "APOGEE": "600"},
+                {"NORAD_CAT_ID": "3", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "ITSO", "PERIGEE": "500", "APOGEE": "600"},
+                {"NORAD_CAT_ID": "4", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "ORB", "PERIGEE": "500", "APOGEE": "600"},
+            ],
+            decay_rows=[],
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertIn({"key": "IT", "label": "Italy", "count": 1}, insights["breakdowns"]["by_country"])
+        self.assertIn({"key": "SKOR", "label": "South Korea", "count": 1}, insights["breakdowns"]["by_country"])
+        self.assertNotIn("Itso", [row["label"] for row in insights["breakdowns"]["by_country"]])
+        self.assertNotIn("Orb", [row["label"] for row in insights["breakdowns"]["by_country"]])
+        self.assertEqual(insights["breakdowns"]["by_operator"], [])
+
+    def test_orbit_highlights_ignore_zero_or_invalid_altitudes(self) -> None:
+        insights = build_space_track_insights(
+            gp_rows=[
+                {"NORAD_CAT_ID": "10", "OBJECT_NAME": "ZERO ORBIT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+                {"NORAD_CAT_ID": "11", "OBJECT_NAME": "VALID LOW", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
+                {"NORAD_CAT_ID": "12", "OBJECT_NAME": "VALID HIGH", "MEAN_MOTION": "1.0", "ECCENTRICITY": "0.001"},
+            ],
+            satcat_rows=[
+                {"NORAD_CAT_ID": "10", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "US", "PERIGEE": "0", "APOGEE": "0"},
+                {"NORAD_CAT_ID": "11", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "US", "PERIGEE": "450", "APOGEE": "550"},
+                {"NORAD_CAT_ID": "12", "OBJECT_TYPE": "PAYLOAD", "OPS_STATUS_CODE": "+", "OWNER": "US", "PERIGEE": "35000", "APOGEE": "36000"},
+            ],
+            decay_rows=[],
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(insights["highlights"]["lowest_active_orbit"]["norad_cat_id"], 11)
+        self.assertEqual(insights["highlights"]["highest_orbit"]["norad_cat_id"], 12)
+
 
 if __name__ == "__main__":
     unittest.main()
