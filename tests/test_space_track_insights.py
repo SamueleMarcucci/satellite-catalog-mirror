@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts.build_insights import normalize_insights_base_url
-from scripts.space_track_insights import build_space_track_insights, write_insights_output
+from scripts.space_track_insights import build_insights_manifest, build_space_track_insights, write_insights_output
 
 
 GP_ROWS = [
@@ -110,6 +110,12 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertEqual(insights["today"]["launches"][0]["norad_cat_id"], 44713)
         self.assertEqual(len(insights["today"]["reentries"]), 1)
         self.assertEqual(insights["breakdowns"]["by_orbit"][0]["key"], "LEO")
+        self.assertEqual(insights["today"]["launches"][0]["category"], "Payload")
+        self.assertEqual(insights["today"]["launches"][0]["category_key"], "payload")
+        self.assertEqual(insights["today"]["launches"][0]["country"], "United States")
+        self.assertEqual(insights["today"]["launches"][0]["country_key"], "US")
+        self.assertIn({"key": "payload", "label": "Payload", "count": 3}, insights["breakdowns"]["by_category"])
+        self.assertIn({"key": "CIS", "label": "Commonwealth of Independent States", "count": 1}, insights["breakdowns"]["by_country"])
         self.assertIn("active_vs_debris", insights["trends"])
 
     def test_output_is_written_as_current_json(self) -> None:
@@ -131,8 +137,33 @@ class SpaceTrackInsightsTests(unittest.TestCase):
             "https://satellite-catalog-mirror.example.workers.dev/insights",
         )
         self.assertEqual(
+            normalize_insights_base_url("https://satellite-catalog-mirror.example.workers.dev/catalog"),
+            "https://satellite-catalog-mirror.example.workers.dev/insights",
+        )
+        self.assertEqual(
             normalize_insights_base_url("https://satellite-catalog-mirror.example.workers.dev/insights"),
             "https://satellite-catalog-mirror.example.workers.dev/insights",
+        )
+
+    def test_manifest_urls_match_worker_insights_routes(self) -> None:
+        raw = b'{"ok":true}\n'
+        manifest = build_insights_manifest(
+            raw,
+            datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+            "https://satellite-catalog-mirror.example.workers.dev/insights",
+        )
+
+        self.assertEqual(
+            manifest["manifest"]["url"],
+            "https://satellite-catalog-mirror.example.workers.dev/insights/manifest.json",
+        )
+        self.assertEqual(
+            manifest["insights"]["url"],
+            "https://satellite-catalog-mirror.example.workers.dev/insights/current.json",
+        )
+        self.assertEqual(
+            manifest["insights_gzip"]["url"],
+            "https://satellite-catalog-mirror.example.workers.dev/insights/current.json.gz",
         )
 
 

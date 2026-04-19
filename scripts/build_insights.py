@@ -44,6 +44,10 @@ def normalize_insights_base_url(value: str) -> str:
         return ""
     if not base.startswith(("http://", "https://")):
         base = f"https://{base}"
+    for suffix in ("/catalog", "/snapshots", "/insights"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
     if not base.endswith("/insights"):
         base = f"{base}/insights"
     return base

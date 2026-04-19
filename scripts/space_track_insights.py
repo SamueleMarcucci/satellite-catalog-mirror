@@ -16,6 +16,36 @@ EARTH_RADIUS_KM = 6378.137
 EARTH_MU_KM3_S2 = 398600.4418
 SECONDS_PER_DAY = 86400.0
 
+CATEGORY_LABELS = {
+    "payload": "Payload",
+    "rocket_body": "Rocket Body",
+    "debris": "Debris",
+    "unknown": "Unknown",
+}
+
+COUNTRY_LABELS = {
+    "US": "United States",
+    "PRC": "China",
+    "CHN": "China",
+    "CIS": "Commonwealth of Independent States",
+    "TBD": "Unassigned",
+    "UNKNOWN": "Unknown",
+    "UNK": "Unknown",
+    "CA": "Canada",
+    "CAN": "Canada",
+    "FR": "France",
+    "FRA": "France",
+    "GER": "Germany",
+    "DEU": "Germany",
+    "IND": "India",
+    "JPN": "Japan",
+    "UK": "United Kingdom",
+    "GB": "United Kingdom",
+    "ESA": "European Space Agency",
+    "EUME": "EUMETSAT",
+    "RUS": "Russia",
+}
+
 
 def parse_int(value: Any) -> Optional[int]:
     if value is None:
@@ -64,6 +94,22 @@ def clean_string(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def titleize_key(value: str) -> str:
+    return " ".join(part.capitalize() for part in value.replace("_", " ").replace("-", " ").split())
+
+
+def category_label(value: str) -> str:
+    return CATEGORY_LABELS.get(value, titleize_key(value))
+
+
+def country_label(value: Optional[str]) -> str:
+    raw = clean_string(value)
+    if raw is None:
+        return "Unknown"
+    upper = raw.upper()
+    return COUNTRY_LABELS.get(upper, titleize_key(raw) if raw == upper else raw)
 
 
 def norad_id(row: dict[str, Any]) -> Optional[int]:
@@ -172,13 +218,19 @@ def normalize_object(
     decay_date = parse_date((decay or {}).get("DECAY_EPOCH") or (decay or {}).get("DECAY_DATE") or (satcat or {}).get("DECAY_DATE"))
     inclination = parse_float((gp or {}).get("INCLINATION") or (satcat or {}).get("INCLINATION"))
     mean_motion = parse_float((gp or {}).get("MEAN_MOTION"))
+    category_key = normalized_category(gp, satcat)
+    country_key = clean_string((satcat or {}).get("COUNTRY") or (satcat or {}).get("OWNER")) or "Unknown"
+    operator_key = clean_string((satcat or {}).get("OWNER") or (satcat or {}).get("COUNTRY")) or "Unknown"
     return {
         "norad_cat_id": norad,
         "name": row_name(gp, satcat, decay),
         "object_id": clean_string((satcat or {}).get("OBJECT_ID") or (gp or {}).get("OBJECT_ID") or (decay or {}).get("OBJECT_ID")),
-        "category": normalized_category(gp, satcat),
-        "country": clean_string((satcat or {}).get("COUNTRY") or (satcat or {}).get("OWNER")),
-        "operator": clean_string((satcat or {}).get("OWNER") or (satcat or {}).get("COUNTRY")),
+        "category_key": category_key,
+        "category": category_label(category_key),
+        "country_key": country_key,
+        "country": country_label(country_key),
+        "operator_key": operator_key,
+        "operator": country_label(operator_key),
         "launch_date": launch_date.isoformat() if launch_date else None,
         "decay_date": decay_date.isoformat() if decay_date else None,
         "orbit": {
@@ -194,6 +246,14 @@ def normalize_object(
 
 def top_counts(counter: Counter[str], *, limit: int = 12) -> list[dict[str, Any]]:
     return [{"key": key, "count": count} for key, count in counter.most_common(limit) if key and count > 0]
+
+
+def labeled_top_counts(counter: Counter[str], *, labeler, limit: int = 12) -> list[dict[str, Any]]:
+    return [
+        {"key": key, "label": labeler(key), "count": count}
+        for key, count in counter.most_common(limit)
+        if key and count > 0
+    ]
 
 
 def newest_satellite(active_objects: list[dict[str, Any]], debut_rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -300,16 +360,16 @@ def build_space_track_insights(
         },
         "breakdowns": {
             "by_orbit": by_orbit,
-            "by_category": top_counts(Counter(obj["category"] for obj in objects), limit=8),
-            "by_country": top_counts(Counter(obj.get("country") or "Unknown" for obj in objects), limit=20),
-            "by_operator": top_counts(Counter(obj.get("operator") or "Unknown" for obj in objects), limit=20),
+            "by_category": labeled_top_counts(Counter(obj["category_key"] for obj in objects), labeler=category_label, limit=8),
+            "by_country": labeled_top_counts(Counter(obj.get("country_key") or "Unknown" for obj in objects), labeler=country_label, limit=20),
+            "by_operator": labeled_top_counts(Counter(obj.get("operator_key") or "Unknown" for obj in objects), labeler=country_label, limit=20),
         },
         "trends": {
             "launches_over_time": [{"year": year, "count": launches_by_year[year]} for year in recent_years],
             "active_vs_debris": [
-                {"key": "active_payloads", "count": len(active_objects)},
-                {"key": "debris", "count": sum(1 for obj in objects if obj["category"] == "debris")},
-                {"key": "rocket_bodies", "count": sum(1 for obj in objects if obj["category"] == "rocket_body")},
+                {"key": "active_payloads", "label": "Active Payloads", "count": len(active_objects)},
+                {"key": "debris", "label": "Debris", "count": sum(1 for obj in objects if obj["category_key"] == "debris")},
+                {"key": "rocket_bodies", "label": "Rocket Bodies", "count": sum(1 for obj in objects if obj["category_key"] == "rocket_body")},
             ],
             "busiest_orbit_band": by_orbit[:5],
         },
@@ -335,6 +395,11 @@ def build_insights_manifest(raw: bytes, generated_at: datetime, public_base_url:
     return {
         "schema_version": 1,
         "generated_at": isoformat_z(generated_at),
+        "manifest": {
+            "path": "manifest.json",
+            "url": f"{base}/manifest.json" if base else None,
+            "content_type": "application/json; charset=utf-8",
+        },
         "insights": {
             "path": "current.json",
             "url": f"{base}/current.json" if base else None,
