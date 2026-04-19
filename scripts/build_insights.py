@@ -15,6 +15,7 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.launch_library import load_or_fetch_launch_rows, split_launch_sections  # noqa: E402
 from scripts.mirror_spacetrack import (  # noqa: E402
     MirrorConfig,
     SPACE_TRACK_BASE_URL,
@@ -173,6 +174,9 @@ def main() -> int:
     parser.add_argument("--output-dir", default="public/insights", help="Directory for current.json.")
     parser.add_argument("--cache-dir", default="build/insights/cache", help="Directory for raw Space-Track response cache.")
     parser.add_argument("--cache-max-age-hours", type=int, default=23, help="Reuse raw Space-Track JSON while younger than this.")
+    parser.add_argument("--launch-cache-max-age-hours", type=int, default=6, help="Reuse raw Launch Library 2 JSON while younger than this.")
+    parser.add_argument("--launch-lookahead-days", type=int, default=45, help="How far ahead to fetch upcoming Launch Library 2 launches.")
+    parser.add_argument("--launch-limit", type=int, default=50, help="Maximum Launch Library 2 launches to request.")
     parser.add_argument("--dry-run", action="store_true", help="Write current.json locally, but do not upload to R2.")
     parser.add_argument("--force-refresh", action="store_true", help="Ignore cached Space-Track JSON.")
     parser.add_argument("--timeout", type=int, default=90, help="HTTP timeout per Space-Track request.")
@@ -201,11 +205,31 @@ def main() -> int:
             print("Space-Track satcat_debut unavailable; continuing without optional debut enrichment.")
             fetched[class_name] = []
 
+    launch_sections = {"today": [], "upcoming": []}
+    launch_start = now.date()
+    launch_end = launch_start + timedelta(days=max(1, args.launch_lookahead_days))
+    try:
+        launch_rows = load_or_fetch_launch_rows(
+            cache_dir=Path(args.cache_dir) / "launch_library",
+            start=launch_start,
+            end=launch_end,
+            now=now,
+            timeout=args.timeout,
+            force_refresh=args.force_refresh,
+            cache_max_age_hours=args.launch_cache_max_age_hours,
+            limit=args.launch_limit,
+        )
+        launch_sections = split_launch_sections(launch_rows, today=launch_start)
+    except Exception as error:
+        print(f"Launch Library 2 unavailable; continuing with empty launch sections ({error.__class__.__name__}).")
+
     insights = build_space_track_insights(
         gp_rows=fetched["gp"],
         satcat_rows=fetched["satcat"],
         decay_rows=fetched["decay"],
         satcat_debut_rows=fetched["satcat_debut"],
+        today_launches=launch_sections["today"],
+        upcoming_launches=launch_sections["upcoming"],
         generated_at=now,
     )
     if insights["counts"]["gp"] < 15 or insights["counts"]["satcat"] < 15:

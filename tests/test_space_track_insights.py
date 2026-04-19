@@ -106,17 +106,44 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertEqual(insights["counts"]["gp"], 3)
         self.assertEqual(insights["counts"]["satcat"], 4)
         self.assertEqual(insights["highlights"]["biggest_constellation"]["name"], "STARLINK")
-        self.assertEqual(len(insights["today"]["launches"]), 1)
-        self.assertEqual(insights["today"]["launches"][0]["norad_cat_id"], 44713)
+        self.assertEqual(insights["today"]["launches"], [])
+        self.assertEqual(insights["upcoming"]["launches"], [])
         self.assertEqual(len(insights["today"]["reentries"]), 1)
         self.assertEqual(insights["breakdowns"]["by_orbit"][0]["key"], "LEO")
-        self.assertEqual(insights["today"]["launches"][0]["category"], "Payload")
-        self.assertEqual(insights["today"]["launches"][0]["category_key"], "payload")
-        self.assertEqual(insights["today"]["launches"][0]["country"], "United States")
-        self.assertEqual(insights["today"]["launches"][0]["country_key"], "US")
+        self.assertEqual(insights["highlights"]["lowest_active_orbit"]["category"], "Payload")
+        self.assertEqual(insights["highlights"]["lowest_active_orbit"]["category_key"], "payload")
+        self.assertEqual(insights["highlights"]["lowest_active_orbit"]["country"], "United States")
+        self.assertEqual(insights["highlights"]["lowest_active_orbit"]["country_key"], "US")
         self.assertIn({"key": "payload", "label": "Payload", "count": 3}, insights["breakdowns"]["by_category"])
         self.assertIn({"key": "CIS", "label": "Commonwealth of Independent States", "count": 1}, insights["breakdowns"]["by_country"])
         self.assertIn("active_vs_debris", insights["trends"])
+
+    def test_launch_sections_are_explicit_inputs_not_space_track_launch_dates(self) -> None:
+        launch = {
+            "id": "launch-1",
+            "name": "Example Launch",
+            "window_start": "2026-04-19T12:00:00Z",
+            "window_end": None,
+            "status": "Go",
+            "provider": "Example Provider",
+            "vehicle": "Example Rocket",
+            "pad_name": "Example Pad",
+            "location_name": "Example Location",
+            "mission_name": "Example Mission",
+            "mission_type": "Test",
+            "image_url": None,
+        }
+        insights = build_space_track_insights(
+            gp_rows=GP_ROWS,
+            satcat_rows=SATCAT_ROWS,
+            decay_rows=DECAY_ROWS,
+            today_launches=[launch],
+            upcoming_launches=[],
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(insights["today"]["launches"], [launch])
+        self.assertEqual(insights["upcoming"]["launches"], [])
 
     def test_output_is_written_as_current_json(self) -> None:
         insights = build_space_track_insights(

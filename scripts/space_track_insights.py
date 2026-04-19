@@ -355,6 +355,8 @@ def build_space_track_insights(
     satcat_rows: list[dict[str, Any]],
     decay_rows: list[dict[str, Any]],
     satcat_debut_rows: Optional[list[dict[str, Any]]] = None,
+    today_launches: Optional[list[dict[str, Any]]] = None,
+    upcoming_launches: Optional[list[dict[str, Any]]] = None,
     generated_at: Optional[datetime] = None,
 ) -> dict[str, Any]:
     generated_at = generated_at or utc_now()
@@ -375,7 +377,6 @@ def build_space_track_insights(
         and is_active_payload(gp_by_norad.get(obj["norad_cat_id"]), satcat_by_norad.get(obj["norad_cat_id"]))
     ]
 
-    launches_today = [obj for obj in objects if obj.get("launch_date") == today.isoformat()]
     reentries_today = [
         normalize_object(norad, gp_by_norad.get(norad), satcat_by_norad.get(norad), row)
         for norad, row in decay_by_norad.items()
@@ -418,10 +419,11 @@ def build_space_track_insights(
             "join_key": "NORAD_CAT_ID",
         },
         "today": {
-            "launches": sorted(launches_today, key=lambda item: item["norad_cat_id"]),
+            "launches": today_launches or [],
             "reentries": sorted(reentries_today, key=lambda item: item["norad_cat_id"]),
         },
         "upcoming": {
+            "launches": upcoming_launches or [],
             "reentries": upcoming_reentries[:25],
         },
         "highlights": {
