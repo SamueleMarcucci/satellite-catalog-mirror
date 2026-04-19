@@ -25,6 +25,9 @@ function headersFor(kind, fileName, object) {
 }
 
 function prefixFor(kind, env) {
+  if (kind === "insights") {
+    return (env.INSIGHTS_PREFIX || "insights/").replace(/^\/+|\/+$/g, "");
+  }
   if (kind === "snapshots") {
     return (env.SNAPSHOT_PREFIX || "snapshots/").replace(/^\/+|\/+$/g, "");
   }
@@ -94,6 +97,21 @@ export default {
     }
     if (url.pathname === "/snapshots/current.json.gz") {
       return serveObject("snapshots", "current.json.gz", env);
+    }
+
+    if (url.pathname === "/insights" || url.pathname === "/insights/") {
+      return new Response("Satellite Space-Track insights\n", {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+    if (url.pathname === "/insights/manifest.json") {
+      return serveObject("insights", "manifest.json", env);
+    }
+    if (url.pathname === "/insights/current.json") {
+      return serveObject("insights", "current.json", env);
+    }
+    if (url.pathname === "/insights/current.json.gz") {
+      return serveObject("insights", "current.json.gz", env);
     }
 
     return new Response("Not found\n", { status: 404 });
