@@ -251,18 +251,21 @@ def main() -> int:
     launch_sections = {"today": [], "upcoming": []}
     launch_start = now.date()
     launch_end = launch_start + timedelta(days=max(1, args.launch_lookahead_days))
+    # Include windows that started up to 24h before "now" so the API query is not clipped
+    # at today's UTC midnight (which previously hid every recent launch from the payload).
+    window_start_gte = now - timedelta(hours=24)
     try:
         launch_rows = load_or_fetch_launch_rows(
             cache_dir=cache_dir / "launch_library",
-            start=launch_start,
-            end=launch_end,
+            window_start_gte=window_start_gte,
+            window_start_lt=launch_end,
             now=now,
             timeout=args.timeout,
             force_refresh=args.force_refresh,
             cache_max_age_hours=args.launch_cache_max_age_hours,
             limit=args.launch_limit,
         )
-        launch_sections = split_launch_sections(launch_rows, today=launch_start)
+        launch_sections = split_launch_sections(launch_rows, now=now)
     except Exception as error:
         print(f"Launch Library 2 unavailable; continuing with empty launch sections ({error.__class__.__name__}).")
 

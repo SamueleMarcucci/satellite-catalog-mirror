@@ -41,7 +41,8 @@ def normalize_launch(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(row.get("id") or row.get("slug") or ""),
         "name": clean_string(row.get("name")) or "Unnamed launch",
-        "window_start": clean_string(row.get("window_start")),
+        # Launch Library often has both; some rows omit `window_start` but still carry `net`.
+        "window_start": clean_string(row.get("window_start")) or clean_string(row.get("net")),
         "window_end": clean_string(row.get("window_end")),
         "status": clean_string(status.get("name") if isinstance(status, dict) else status),
         "provider": clean_string(nested_value(row, ["launch_service_provider", "name"])),
@@ -74,24 +75,33 @@ def parse_iso_datetime(value: Any) -> Optional[datetime]:
 def split_launch_sections(
     rows: list[dict[str, Any]],
     *,
-    today: date,
+    now: datetime,
+    recent_hours: int = 24,
     upcoming_limit: int = 25,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Split normalized launches into *recent* vs *future*.
+
+    ``today`` in the insights JSON historically meant UTC calendar day, which missed any
+    window that started **yesterday UTC** but still falls in the last 24 hours, and did not
+    match how clients treat a rolling window. We now put ``window_start ∈ [now−24h, now]``
+    (UTC) into ``today`` and everything strictly after ``now`` into ``upcoming``.
+    """
+    now_utc = now.astimezone(timezone.utc)
+    cutoff = now_utc - timedelta(hours=recent_hours)
+
     normalized = [launch for launch in (normalize_launch(row) for row in rows) if launch["id"] and launch["window_start"]]
     normalized.sort(key=lambda item: (item["window_start"], item["id"]))
 
     today_launches: list[dict[str, Any]] = []
     upcoming_launches: list[dict[str, Any]] = []
-    today_ids: set[str] = set()
 
     for launch in normalized:
         start = parse_iso_datetime(launch.get("window_start"))
         if start is None:
             continue
-        if start.date() == today:
+        if cutoff <= start <= now_utc:
             today_launches.append(launch)
-            today_ids.add(launch["id"])
-        elif start.date() > today and launch["id"] not in today_ids:
+        elif start > now_utc:
             upcoming_launches.append(launch)
 
     return {
@@ -100,12 +110,20 @@ def split_launch_sections(
     }
 
 
-def cache_path(cache_dir: Path, start: date, end: date) -> Path:
-    return cache_dir / f"launches_{start.isoformat()}_{end.isoformat()}.json"
+def cache_path(cache_dir: Path, window_start_gte: datetime, window_start_lt: date, limit: int) -> Path:
+    g = window_start_gte.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return cache_dir / f"launches_gte_{g}_lt_{window_start_lt.isoformat()}_{limit}.json"
 
 
-def read_cached_launch_rows(cache_dir: Path, start: date, end: date, max_age_hours: int, now: datetime) -> list[dict[str, Any]] | None:
-    path = cache_path(cache_dir, start, end)
+def read_cached_launch_rows(
+    cache_dir: Path,
+    window_start_gte: datetime,
+    window_start_lt: date,
+    limit: int,
+    max_age_hours: int,
+    now: datetime,
+) -> list[dict[str, Any]] | None:
+    path = cache_path(cache_dir, window_start_gte, window_start_lt, limit)
     if not path.exists():
         return None
     modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
@@ -115,30 +133,46 @@ def read_cached_launch_rows(cache_dir: Path, start: date, end: date, max_age_hou
     return parsed if isinstance(parsed, list) else None
 
 
-def write_cached_launch_rows(cache_dir: Path, start: date, end: date, rows: list[dict[str, Any]]) -> None:
+def write_cached_launch_rows(
+    cache_dir: Path,
+    window_start_gte: datetime,
+    window_start_lt: date,
+    limit: int,
+    rows: list[dict[str, Any]],
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path(cache_dir, start, end).write_text(
+    cache_path(cache_dir, window_start_gte, window_start_lt, limit).write_text(
         json.dumps(rows, separators=(",", ":"), sort_keys=True),
         encoding="utf-8",
     )
 
 
-def launch_library_url(start: date, end: date, *, limit: int) -> str:
+def _format_query_instant_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def launch_library_url(window_start_gte: datetime, window_start_lt: date, *, limit: int) -> str:
     query = urlencode(
         {
             "format": "json",
             "limit": str(limit),
             "ordering": "window_start",
-            "window_start__gte": f"{start.isoformat()}T00:00:00Z",
-            "window_start__lt": f"{end.isoformat()}T00:00:00Z",
+            "window_start__gte": _format_query_instant_utc(window_start_gte),
+            "window_start__lt": f"{window_start_lt.isoformat()}T00:00:00Z",
         }
     )
     return f"{LAUNCH_LIBRARY_BASE_URL}/launches/upcoming/?{query}"
 
 
-def fetch_launch_library_rows(start: date, end: date, *, timeout: int, limit: int = 50) -> list[dict[str, Any]]:
+def fetch_launch_library_rows(
+    window_start_gte: datetime,
+    window_start_lt: date,
+    *,
+    timeout: int,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
     response = requests.get(
-        launch_library_url(start, end, limit=limit),
+        launch_library_url(window_start_gte, window_start_lt, limit=limit),
         timeout=timeout,
         headers={
             "Accept": "application/json, */*; q=0.8",
@@ -159,8 +193,8 @@ def fetch_launch_library_rows(start: date, end: date, *, timeout: int, limit: in
 def load_or_fetch_launch_rows(
     *,
     cache_dir: Path,
-    start: date,
-    end: date,
+    window_start_gte: datetime,
+    window_start_lt: date,
     now: datetime,
     timeout: int,
     force_refresh: bool,
@@ -168,12 +202,19 @@ def load_or_fetch_launch_rows(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     if not force_refresh:
-        cached = read_cached_launch_rows(cache_dir, start, end, cache_max_age_hours, now)
+        cached = read_cached_launch_rows(
+            cache_dir,
+            window_start_gte,
+            window_start_lt,
+            limit,
+            cache_max_age_hours,
+            now,
+        )
         if cached is not None:
             print(f"Using cached Launch Library 2 launches: {len(cached)} rows")
             return cached
 
-    rows = fetch_launch_library_rows(start, end, timeout=timeout, limit=limit)
-    write_cached_launch_rows(cache_dir, start, end, rows)
+    rows = fetch_launch_library_rows(window_start_gte, window_start_lt, timeout=timeout, limit=limit)
+    write_cached_launch_rows(cache_dir, window_start_gte, window_start_lt, limit, rows)
     print(f"Fetched Launch Library 2 launches: {len(rows)} rows")
     return rows

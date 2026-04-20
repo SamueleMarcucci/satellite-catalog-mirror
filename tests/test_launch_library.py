@@ -47,6 +47,14 @@ class LaunchLibraryTests(unittest.TestCase):
         self.assertEqual(launch["mission_type"], "Communications")
         self.assertEqual(launch["image_url"], "https://example.test/launch.jpg")
 
+    def test_normalize_launch_uses_net_when_window_start_missing(self) -> None:
+        row = dict(RAW_LAUNCH)
+        row["window_start"] = None
+        row["net"] = "2026-04-19T16:05:00Z"
+        launch = normalize_launch(row)
+
+        self.assertEqual(launch["window_start"], "2026-04-19T16:05:00Z")
+
     def test_split_launch_sections_avoids_duplicates(self) -> None:
         rows = [
             RAW_LAUNCH,
@@ -59,7 +67,8 @@ class LaunchLibraryTests(unittest.TestCase):
             },
         ]
 
-        sections = split_launch_sections(rows, today=date(2026, 4, 19))
+        now = datetime(2026, 4, 19, 18, 0, tzinfo=timezone.utc)
+        sections = split_launch_sections(rows, now=now)
 
         self.assertEqual([launch["id"] for launch in sections["today"]], ["abc-123"])
         self.assertEqual([launch["id"] for launch in sections["upcoming"]], ["future-1"])
@@ -71,12 +80,13 @@ class LaunchLibraryTests(unittest.TestCase):
             with patch("scripts.launch_library.fetch_launch_library_rows", return_value=[]):
                 rows = load_or_fetch_launch_rows(
                     cache_dir=cache_dir,
-                    start=date(2026, 4, 19),
-                    end=date(2026, 5, 1),
+                    window_start_gte=datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc),
+                    window_start_lt=date(2026, 5, 1),
                     now=now,
                     timeout=5,
                     force_refresh=False,
                     cache_max_age_hours=6,
+                    limit=50,
                 )
             self.assertEqual(rows, [])
 
