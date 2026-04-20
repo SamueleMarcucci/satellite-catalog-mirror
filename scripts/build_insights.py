@@ -24,8 +24,11 @@ from scripts.mirror_spacetrack import (  # noqa: E402
     space_track_login,
 )
 from scripts.space_track_insights import (  # noqa: E402
+    INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT,
     build_insights_manifest,
     build_space_track_insights,
+    merge_insights_history,
+    write_insights_history,
     write_insights_output,
 )
 from tle_mirror import utc_now  # noqa: E402
@@ -52,6 +55,16 @@ def normalize_insights_base_url(value: str) -> str:
     if not base.endswith("/insights"):
         base = f"{base}/insights"
     return base
+
+
+def env_int(name: str, default: int) -> int:
+    raw = env_value(name)
+    if not raw:
+        return default
+    try:
+        return max(10, int(raw))
+    except ValueError:
+        return default
 
 
 def load_insights_config(require_r2: bool) -> MirrorConfig:
@@ -103,8 +116,9 @@ def write_cached_rows(cache_dir: Path, class_name: str, rows: list[dict[str, Any
 
 
 def fetch_space_track_json(session: requests.Session, class_name: str, timeout: int) -> list[dict[str, Any]]:
+    path = SPACE_TRACK_JSON_QUERIES[class_name]
     response = session.get(
-        f"{SPACE_TRACK_BASE_URL}{SPACE_TRACK_JSON_QUERIES[class_name]}",
+        f"{SPACE_TRACK_BASE_URL}{path}",
         timeout=timeout,
         headers={
             "Accept": "application/json, */*; q=0.8",
@@ -148,16 +162,36 @@ def load_or_fetch_rows(
     return rows
 
 
+def read_insights_history_from_r2(config: MirrorConfig) -> dict[str, Any] | None:
+    client = r2_client(config)
+    key = config.r2_key("history.json")
+    try:
+        obj = client.get_object(Bucket=config.r2_bucket, Key=key)
+    except Exception as exc:
+        print(f"No existing R2 history.json ({exc.__class__.__name__}); starting a new history file.")
+        return None
+    body = obj["Body"].read()
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"R2 history.json is not valid JSON: {exc}") from exc
+    return parsed if isinstance(parsed, dict) else None
+
+
 def upload_outputs_to_r2(config: MirrorConfig, output_dir: Path, manifest: dict[str, Any]) -> None:
     client = r2_client(config)
     raw = (output_dir / "current.json").read_bytes()
     (output_dir / "current.json.gz").write_bytes(gzip.compress(raw, compresslevel=9, mtime=0))
+    history_raw_bytes = (output_dir / "history.json").read_bytes()
+    (output_dir / "history.json.gz").write_bytes(gzip.compress(history_raw_bytes, compresslevel=9, mtime=0))
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     uploads = [
         ("manifest.json", "application/json; charset=utf-8", "public, max-age=300"),
         ("current.json", "application/json; charset=utf-8", "public, max-age=300"),
         ("current.json.gz", "application/gzip", "public, max-age=300"),
+        ("history.json", "application/json; charset=utf-8", "public, max-age=300"),
+        ("history.json.gz", "application/gzip", "public, max-age=300"),
     ]
     for filename, content_type, cache_control in uploads:
         client.upload_file(
@@ -180,10 +214,19 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Write current.json locally, but do not upload to R2.")
     parser.add_argument("--force-refresh", action="store_true", help="Ignore cached Space-Track JSON.")
     parser.add_argument("--timeout", type=int, default=90, help="HTTP timeout per Space-Track request.")
+    parser.add_argument(
+        "--history-max-snapshots",
+        type=int,
+        default=0,
+        help=f"Cap history.json snapshots (default: env INSIGHTS_HISTORY_MAX_SNAPSHOTS or {INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT}).",
+    )
     args = parser.parse_args()
 
     config = load_insights_config(require_r2=not args.dry_run)
     now = utc_now()
+    cache_dir = Path(args.cache_dir)
+    output_dir = Path(args.output_dir)
+
     session = requests.Session()
     space_track_login(session, config, timeout=args.timeout)
 
@@ -193,7 +236,7 @@ def main() -> int:
             fetched[class_name] = load_or_fetch_rows(
                 session=session,
                 class_name=class_name,
-                cache_dir=Path(args.cache_dir),
+                cache_dir=cache_dir,
                 max_age_hours=args.cache_max_age_hours,
                 now=now,
                 timeout=args.timeout,
@@ -210,7 +253,7 @@ def main() -> int:
     launch_end = launch_start + timedelta(days=max(1, args.launch_lookahead_days))
     try:
         launch_rows = load_or_fetch_launch_rows(
-            cache_dir=Path(args.cache_dir) / "launch_library",
+            cache_dir=cache_dir / "launch_library",
             start=launch_start,
             end=launch_end,
             now=now,
@@ -223,7 +266,7 @@ def main() -> int:
     except Exception as error:
         print(f"Launch Library 2 unavailable; continuing with empty launch sections ({error.__class__.__name__}).")
 
-    insights = build_space_track_insights(
+    insights, history_snapshot = build_space_track_insights(
         gp_rows=fetched["gp"],
         satcat_rows=fetched["satcat"],
         decay_rows=fetched["decay"],
@@ -235,11 +278,31 @@ def main() -> int:
     if insights["counts"]["gp"] < 15 or insights["counts"]["satcat"] < 15:
         raise RuntimeError(f"Refusing to publish suspiciously small insights input counts: {insights['counts']}")
 
-    output_dir = Path(args.output_dir)
-    raw = write_insights_output(output_dir, insights)
-    manifest = build_insights_manifest(raw, now, config.public_catalog_base_url)
+    max_hist = (
+        args.history_max_snapshots
+        if args.history_max_snapshots > 0
+        else env_int("INSIGHTS_HISTORY_MAX_SNAPSHOTS", INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT)
+    )
 
+    prior_history: dict[str, Any] | None = None
+    if args.dry_run:
+        local_hist = output_dir / "history.json"
+        if local_hist.exists():
+            try:
+                prior_history = json.loads(local_hist.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                print("Warning: local history.json is invalid JSON; it will be replaced with a fresh series.")
+                prior_history = None
+    else:
+        prior_history = read_insights_history_from_r2(config)
+
+    history_doc = merge_insights_history(prior_history, history_snapshot, max_snapshots=max_hist)
+    history_raw = write_insights_history(output_dir, history_doc)
+
+    raw = write_insights_output(output_dir, insights)
+    manifest = build_insights_manifest(raw, now, config.public_catalog_base_url, history_raw=history_raw)
     print(f"Wrote Space-Track insights to {output_dir / 'current.json'}")
+    print(f"Wrote insights history ({len(history_doc['snapshots'])} snapshots) to {output_dir / 'history.json'}")
     print(
         "Summary: "
         f"gp={insights['counts']['gp']} "

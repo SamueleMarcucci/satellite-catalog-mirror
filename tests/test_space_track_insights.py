@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 
 from scripts.build_insights import normalize_insights_base_url
-from scripts.space_track_insights import build_insights_manifest, build_space_track_insights, write_insights_output
+from scripts.space_track_insights import (
+    build_insights_manifest,
+    build_space_track_insights,
+    merge_insights_history,
+    write_insights_history,
+    write_insights_output,
+)
 
 
 GP_ROWS = [
@@ -93,7 +99,7 @@ DECAY_ROWS = [
 
 class SpaceTrackInsightsTests(unittest.TestCase):
     def test_builds_expected_app_insights_shape(self) -> None:
-        insights = build_space_track_insights(
+        insights, snapshot = build_space_track_insights(
             gp_rows=GP_ROWS,
             satcat_rows=SATCAT_ROWS,
             decay_rows=DECAY_ROWS,
@@ -118,6 +124,14 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertIn({"key": "CIS", "label": "Commonwealth of Independent States", "count": 1}, insights["breakdowns"]["by_country"])
         self.assertIn("active_vs_debris", insights["trends"])
 
+        self.assertEqual(snapshot["timestamp"], "2026-04-19T12:00:00Z")
+        self.assertEqual(snapshot["launches_today_count"], 0)
+        self.assertEqual(snapshot["reentries_today_count"], 1)
+        self.assertIn("by_orbit", snapshot)
+        self.assertEqual(snapshot["by_orbit"]["leo"], 3)
+        self.assertEqual(snapshot["biggest_constellation"]["name"], "STARLINK")
+        self.assertLessEqual(len(snapshot["top_constellations"]), 5)
+
     def test_launch_sections_are_explicit_inputs_not_space_track_launch_dates(self) -> None:
         launch = {
             "id": "launch-1",
@@ -133,7 +147,7 @@ class SpaceTrackInsightsTests(unittest.TestCase):
             "mission_type": "Test",
             "image_url": None,
         }
-        insights = build_space_track_insights(
+        insights, snapshot = build_space_track_insights(
             gp_rows=GP_ROWS,
             satcat_rows=SATCAT_ROWS,
             decay_rows=DECAY_ROWS,
@@ -144,9 +158,10 @@ class SpaceTrackInsightsTests(unittest.TestCase):
 
         self.assertEqual(insights["today"]["launches"], [launch])
         self.assertEqual(insights["upcoming"]["launches"], [])
+        self.assertEqual(snapshot["launches_today_count"], 1)
 
     def test_output_is_written_as_current_json(self) -> None:
-        insights = build_space_track_insights(
+        insights, _snap = build_space_track_insights(
             gp_rows=GP_ROWS,
             satcat_rows=SATCAT_ROWS,
             decay_rows=DECAY_ROWS,
@@ -157,6 +172,50 @@ class SpaceTrackInsightsTests(unittest.TestCase):
             write_insights_output(output_dir, insights)
             written = json.loads((output_dir / "current.json").read_text(encoding="utf-8"))
             self.assertEqual(written["counts"]["merged"], 4)
+
+    def test_history_merge_appends_and_caps(self) -> None:
+        _insights, snap_a = build_space_track_insights(
+            gp_rows=GP_ROWS,
+            satcat_rows=SATCAT_ROWS,
+            decay_rows=DECAY_ROWS,
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+        _, snap_b = build_space_track_insights(
+            gp_rows=GP_ROWS,
+            satcat_rows=SATCAT_ROWS,
+            decay_rows=DECAY_ROWS,
+            generated_at=datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc),
+        )
+        doc = merge_insights_history(None, snap_a, max_snapshots=100)
+        doc = merge_insights_history(doc, snap_b, max_snapshots=100)
+        self.assertEqual(len(doc["snapshots"]), 2)
+        self.assertEqual(doc["snapshots"][-1]["timestamp"], "2026-04-20T12:00:00Z")
+
+        many = merge_insights_history(None, snap_a, max_snapshots=1)
+        self.assertEqual(len(many["snapshots"]), 1)
+        self.assertEqual(many["snapshots"][0]["timestamp"], snap_a["timestamp"])
+
+    def test_manifest_includes_history_when_provided(self) -> None:
+        insights, snap = build_space_track_insights(
+            gp_rows=GP_ROWS,
+            satcat_rows=SATCAT_ROWS,
+            decay_rows=DECAY_ROWS,
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp)
+            raw = write_insights_output(out, insights)
+            hist_raw = write_insights_history(out, merge_insights_history(None, snap, max_snapshots=50))
+            manifest = build_insights_manifest(
+                raw,
+                datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+                "https://example.test/insights",
+                history_raw=hist_raw,
+            )
+            self.assertIn("insights_history", manifest)
+            self.assertEqual(manifest["insights_history"]["path"], "history.json")
+            self.assertTrue(manifest["insights_history"]["url"].endswith("/history.json"))
+            self.assertIn("insights_history_gzip", manifest)
 
     def test_insights_base_url_points_to_insights(self) -> None:
         self.assertEqual(
@@ -194,7 +253,7 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         )
 
     def test_country_breakdown_uses_only_grounded_country_labels(self) -> None:
-        insights = build_space_track_insights(
+        insights, _ = build_space_track_insights(
             gp_rows=[
                 {"NORAD_CAT_ID": "1", "OBJECT_NAME": "ITALY SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
                 {"NORAD_CAT_ID": "2", "OBJECT_NAME": "KOREA SAT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
@@ -218,7 +277,7 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertEqual(insights["breakdowns"]["by_operator"], [])
 
     def test_orbit_highlights_ignore_zero_or_invalid_altitudes(self) -> None:
-        insights = build_space_track_insights(
+        insights, _ = build_space_track_insights(
             gp_rows=[
                 {"NORAD_CAT_ID": "10", "OBJECT_NAME": "ZERO ORBIT", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},
                 {"NORAD_CAT_ID": "11", "OBJECT_NAME": "VALID LOW", "MEAN_MOTION": "14.2", "ECCENTRICITY": "0.001"},

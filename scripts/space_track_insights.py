@@ -16,6 +16,9 @@ EARTH_RADIUS_KM = 6378.137
 EARTH_MU_KM3_S2 = 398600.4418
 SECONDS_PER_DAY = 86400.0
 
+INSIGHTS_HISTORY_SCHEMA_VERSION = 1
+INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT = 2500
+
 CATEGORY_LABELS = {
     "payload": "Payload",
     "rocket_body": "Rocket Body",
@@ -316,6 +319,89 @@ def country_top_counts(values: list[str], *, limit: int = 20) -> list[dict[str, 
     return labeled_top_counts(counter, labeler=country_label, limit=limit)
 
 
+def build_history_snapshot(
+    *,
+    generated_at: datetime,
+    launches_today_count: int,
+    reentries_today_count: int,
+    active_payloads: int,
+    debris: int,
+    rocket_bodies: int,
+    orbit_counter: Counter[str],
+    biggest_constellation_name: str,
+    biggest_constellation_count: int,
+    family_counts: Counter[str],
+) -> dict[str, Any]:
+    by_orbit = {
+        "leo": int(orbit_counter.get("LEO", 0)),
+        "meo": int(orbit_counter.get("MEO", 0)),
+        "geo": int(orbit_counter.get("GEO", 0)),
+        "heo": int(orbit_counter.get("HEO", 0)),
+        "high_earth": int(orbit_counter.get("High Earth", 0)),
+        "unknown": int(orbit_counter.get("Unknown", 0)),
+    }
+    top5 = [
+        {"name": name, "count": int(count)}
+        for name, count in family_counts.most_common(5)
+        if name and count > 0
+    ]
+    return {
+        "timestamp": isoformat_z(generated_at),
+        "launches_today_count": int(launches_today_count),
+        "reentries_today_count": int(reentries_today_count),
+        "active_payloads": int(active_payloads),
+        "debris": int(debris),
+        "rocket_bodies": int(rocket_bodies),
+        "by_orbit": by_orbit,
+        "biggest_constellation": {
+            "name": biggest_constellation_name,
+            "count": int(biggest_constellation_count),
+        },
+        "top_constellations": top5,
+    }
+
+
+def normalize_insights_history_document(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"schema_version": INSIGHTS_HISTORY_SCHEMA_VERSION, "snapshots": []}
+    raw_snaps = data.get("snapshots")
+    snaps: list[dict[str, Any]] = []
+    if isinstance(raw_snaps, list):
+        for item in raw_snaps:
+            if isinstance(item, dict) and item.get("timestamp"):
+                snaps.append(item)
+    snaps.sort(key=lambda s: str(s.get("timestamp") or ""))
+    return {
+        "schema_version": int(data.get("schema_version", INSIGHTS_HISTORY_SCHEMA_VERSION)),
+        "snapshots": snaps,
+    }
+
+
+def merge_insights_history(
+    existing: Optional[dict[str, Any]],
+    snapshot: dict[str, Any],
+    *,
+    max_snapshots: int = INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT,
+) -> dict[str, Any]:
+    base = normalize_insights_history_document(existing) if existing is not None else normalize_insights_history_document({})
+    snapshots = list(base["snapshots"])
+    snapshots.append(snapshot)
+    snapshots.sort(key=lambda s: str(s.get("timestamp") or ""))
+    if len(snapshots) > max_snapshots:
+        snapshots = snapshots[-max_snapshots:]
+    return {
+        "schema_version": INSIGHTS_HISTORY_SCHEMA_VERSION,
+        "snapshots": snapshots,
+    }
+
+
+def write_insights_history(output_dir: Path, history: dict[str, Any]) -> bytes:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(history, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    (output_dir / "history.json").write_bytes(raw)
+    return raw
+
+
 def has_valid_orbit_for_highlight(obj: dict[str, Any]) -> bool:
     orbit = obj.get("orbit") or {}
     perigee = orbit.get("perigee_km")
@@ -358,7 +444,7 @@ def build_space_track_insights(
     today_launches: Optional[list[dict[str, Any]]] = None,
     upcoming_launches: Optional[list[dict[str, Any]]] = None,
     generated_at: Optional[datetime] = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     generated_at = generated_at or utc_now()
     today = generated_at.astimezone(timezone.utc).date()
 
@@ -410,7 +496,25 @@ def build_space_track_insights(
         default=None,
     )
 
-    return {
+    debris_count = sum(1 for obj in objects if obj["category_key"] == "debris")
+    rocket_bodies_count = sum(1 for obj in objects if obj["category_key"] == "rocket_body")
+    orbit_counter = Counter(obj["orbit"]["band"] for obj in objects)
+    launches_today_count = len(today_launches or [])
+
+    history_snapshot = build_history_snapshot(
+        generated_at=generated_at,
+        launches_today_count=launches_today_count,
+        reentries_today_count=len(reentries_today),
+        active_payloads=len(active_objects),
+        debris=debris_count,
+        rocket_bodies=rocket_bodies_count,
+        orbit_counter=orbit_counter,
+        biggest_constellation_name=biggest_family,
+        biggest_constellation_count=int(biggest_count),
+        family_counts=family_counts,
+    )
+
+    insights: dict[str, Any] = {
         "schema_version": 1,
         "last_updated": isoformat_z(generated_at),
         "source": {
@@ -446,8 +550,8 @@ def build_space_track_insights(
             "launches_over_time": [{"year": year, "count": launches_by_year[year]} for year in recent_years],
             "active_vs_debris": [
                 {"key": "active_payloads", "label": "Active Payloads", "count": len(active_objects)},
-                {"key": "debris", "label": "Debris", "count": sum(1 for obj in objects if obj["category_key"] == "debris")},
-                {"key": "rocket_bodies", "label": "Rocket Bodies", "count": sum(1 for obj in objects if obj["category_key"] == "rocket_body")},
+                {"key": "debris", "label": "Debris", "count": debris_count},
+                {"key": "rocket_bodies", "label": "Rocket Bodies", "count": rocket_bodies_count},
             ],
             "busiest_orbit_band": by_orbit[:5],
         },
@@ -458,6 +562,7 @@ def build_space_track_insights(
             "merged": len(objects),
         },
     }
+    return insights, history_snapshot
 
 
 def write_insights_output(output_dir: Path, insights: dict[str, Any]) -> bytes:
@@ -467,10 +572,16 @@ def write_insights_output(output_dir: Path, insights: dict[str, Any]) -> bytes:
     return raw
 
 
-def build_insights_manifest(raw: bytes, generated_at: datetime, public_base_url: str) -> dict[str, Any]:
+def build_insights_manifest(
+    raw: bytes,
+    generated_at: datetime,
+    public_base_url: str,
+    *,
+    history_raw: Optional[bytes] = None,
+) -> dict[str, Any]:
     gz = gzip.compress(raw, compresslevel=9, mtime=0)
     base = public_base_url.rstrip("/")
-    return {
+    manifest: dict[str, Any] = {
         "schema_version": 1,
         "generated_at": isoformat_z(generated_at),
         "manifest": {
@@ -493,3 +604,20 @@ def build_insights_manifest(raw: bytes, generated_at: datetime, public_base_url:
             "content_type": "application/gzip",
         },
     }
+    if history_raw is not None:
+        hgz = gzip.compress(history_raw, compresslevel=9, mtime=0)
+        manifest["insights_history"] = {
+            "path": "history.json",
+            "url": f"{base}/history.json" if base else None,
+            "sha256": hashlib.sha256(history_raw).hexdigest(),
+            "bytes": len(history_raw),
+            "content_type": "application/json; charset=utf-8",
+        }
+        manifest["insights_history_gzip"] = {
+            "path": "history.json.gz",
+            "url": f"{base}/history.json.gz" if base else None,
+            "sha256": hashlib.sha256(hgz).hexdigest(),
+            "bytes": len(hgz),
+            "content_type": "application/gzip",
+        }
+    return manifest

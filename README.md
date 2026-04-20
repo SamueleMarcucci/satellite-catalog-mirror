@@ -11,6 +11,8 @@ This standalone project mirrors public Space-Track GP/TLE data into a static cat
 - Publishes `manifest.json`, `current.3le`, and `current.3le.gz` to Cloudflare R2.
 - Builds server-assisted position snapshots from the mirrored TLE catalog.
 - Publishes `snapshots/manifest.json`, `snapshots/current.json`, and `snapshots/current.json.gz`.
+- Builds Space-Track-only metadata insights from `gp`, `satcat`, `decay`, and optional `satcat_debut`.
+- Publishes `insights/manifest.json`, `insights/current.json`, `insights/current.json.gz`, plus **`insights/history.json`** (append-only trend snapshots) and **`insights/history.json.gz`**.
 - Serves the files through a tiny Cloudflare Worker.
 
 ## Required Secrets
@@ -25,6 +27,7 @@ Add these to the GitHub repo that owns this mirror:
 - `R2_BUCKET`
 - `PUBLIC_CATALOG_BASE_URL`
 - `PUBLIC_SNAPSHOT_BASE_URL`
+- `PUBLIC_INSIGHTS_BASE_URL` optional; defaults to the Worker route ending in `/insights` when omitted.
 
 `PUBLIC_CATALOG_BASE_URL` should be the public Worker route ending in `/catalog`, for example:
 
@@ -68,5 +71,15 @@ For a local snapshot build from an existing catalog file:
 ```sh
 python scripts/build_snapshot.py --catalog-file build/catalog/current.3le --dry-run --output-dir build/snapshots
 ```
+
+For a local Space-Track insights build with real credentials and no R2 upload:
+
+```sh
+SPACE_TRACK_IDENTITY="you@example.com" \
+SPACE_TRACK_PASSWORD="..." \
+python scripts/build_insights.py --dry-run --output-dir public/insights
+```
+
+The insights pipeline caches raw Space-Track JSON under `build/insights/cache` by default and reuses it for 23 hours unless `--force-refresh` is passed. The live app-facing artifact is **`public/insights/current.json`** (today, upcoming, highlights, breakdowns). Each successful run also downloads the prior **`history.json`** from R2 (if any), appends one snapshot, trims to **`INSIGHTS_HISTORY_MAX_SNAPSHOTS`** (default 2500), and writes **`public/insights/history.json`** for trend charts (launches/reentries today counts, active vs debris, orbit bands, constellation counts). Dry runs merge against a local `history.json` in the output folder when present.
 
 Do not commit credentials.

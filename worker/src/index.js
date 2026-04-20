@@ -19,6 +19,12 @@ function headersFor(kind, fileName, object) {
   } else if (fileName === "current.json.gz") {
     headers.set("Content-Type", "application/gzip");
     headers.set("Cache-Control", "public, max-age=60");
+  } else if (fileName === "history.json") {
+    headers.set("Content-Type", "application/json; charset=utf-8");
+    headers.set("Cache-Control", "public, max-age=60");
+  } else if (fileName === "history.json.gz") {
+    headers.set("Content-Type", "application/gzip");
+    headers.set("Cache-Control", "public, max-age=60");
   }
 
   return headers;
@@ -112,6 +118,12 @@ export default {
     }
     if (url.pathname === "/insights/current.json.gz") {
       return serveObject("insights", "current.json.gz", env);
+    }
+    if (url.pathname === "/insights/history.json") {
+      return serveObject("insights", "history.json", env);
+    }
+    if (url.pathname === "/insights/history.json.gz") {
+      return serveObject("insights", "history.json.gz", env);
     }
 
     return new Response("Not found\n", { status: 404 });
