@@ -435,6 +435,246 @@ def newest_satellite(active_objects: list[dict[str, Any]], debut_rows: list[dict
     return max(active_objects, key=lambda item: item["norad_cat_id"], default=None)
 
 
+# MARK: - Deep dives (featured topics)
+
+def _u(name: Optional[str]) -> str:
+    return (name or "").upper()
+
+
+def is_starlink_object(obj: dict[str, Any]) -> bool:
+    """Conservative identification for Starlink: Space-Track names beginning with STARLINK."""
+    name = _u(obj.get("name"))
+    return name.startswith("STARLINK")
+
+
+def is_gps_object(obj: dict[str, Any]) -> bool:
+    """GPS / NAVSTAR payloads only (do not include other GNSS like Galileo/GLONASS)."""
+    name = _u(obj.get("name"))
+    return "NAVSTAR" in name or name.startswith("GPS") or " GPS " in f" {name} "
+
+
+def is_weather_object(obj: dict[str, Any]) -> bool:
+    """Meteorological satellites using strict name tokens for known weather families."""
+    name = _u(obj.get("name"))
+    tokens = (
+        "NOAA",
+        "GOES",
+        "METOP",
+        "METEOR",
+        "HIMAWARI",
+        "FENGYUN",
+        "FY-",
+        "FY ",
+        "JPSS",
+        "SUOMI NPP",
+        "TERRA",
+        "AQUA",
+        "SENTINEL-3",
+        "CLOUDSAT",
+        "CALIPSO",
+    )
+    return any(t in name for t in tokens)
+
+
+def is_station_object(obj: dict[str, Any]) -> bool:
+    """Human spaceflight / station complexes and core modules by name."""
+    name = _u(obj.get("name"))
+    tokens = (
+        "ISS",
+        "ZARYA",
+        "ZVEZDA",
+        "NAUKA",
+        "PRICHAL",
+        "TIANGONG",
+        "TIANHE",
+        "WENTIAN",
+        "MENGTIAN",
+        "MIR",
+        "SKYLAB",
+        "SALYUT",
+    )
+    return any(t in name for t in tokens)
+
+
+def _topic_objects(objects: list[dict[str, Any]], predicate) -> list[dict[str, Any]]:
+    return [obj for obj in objects if obj.get("category_key") == "payload" and predicate(obj)]
+
+
+def _pct(n: int, d: int) -> int:
+    if d <= 0:
+        return 0
+    return int(round(100.0 * n / d))
+
+
+def growth_line_from_launch_dates(
+    objects: list[dict[str, Any]],
+    *,
+    max_points: int = 36,
+) -> list[dict[str, Any]]:
+    """Cumulative growth line grounded in Space-Track `LAUNCH_DATE` (no fabricated history)."""
+    dates = [parse_date(obj.get("launch_date")) for obj in objects]
+    dates = [d for d in dates if d is not None]
+    if not dates:
+        return []
+    start = min(dates)
+    end = max(dates)
+    span_days = (end - start).days
+
+    if span_days <= 90:
+        bucket = "day"
+    elif span_days <= 365 * 3:
+        bucket = "month"
+    else:
+        bucket = "year"
+
+    def bucket_key(d: date) -> date:
+        if bucket == "day":
+            return d
+        if bucket == "month":
+            return date(d.year, d.month, 1)
+        return date(d.year, 1, 1)
+
+    counts: Counter[date] = Counter(bucket_key(d) for d in dates)
+    keys = sorted(counts)
+    # Downsample deterministically if too many buckets: keep the most recent N buckets.
+    if len(keys) > max_points:
+        keys = keys[-max_points:]
+
+    cumulative = 0
+    out: list[dict[str, Any]] = []
+    for k in keys:
+        cumulative += counts[k]
+        out.append({"date": k.isoformat(), "count": cumulative})
+    return out
+
+
+def deep_dives_section(
+    *,
+    objects: list[dict[str, Any]],
+    active_objects: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    total_objects = len(objects)
+    total_payloads = sum(1 for o in objects if o.get("category_key") == "payload")
+
+    starlink = _topic_objects(objects, is_starlink_object)
+    gps = _topic_objects(objects, is_gps_object)
+    weather = _topic_objects(objects, is_weather_object)
+    stations = _topic_objects(objects, is_station_object)
+    debris = [o for o in objects if o.get("category_key") == "debris"]
+
+    active_by_norad = {o["norad_cat_id"] for o in active_objects}
+
+    def orbit_band_share(objs: list[dict[str, Any]], band: str) -> int:
+        return _pct(sum(1 for o in objs if (o.get("orbit") or {}).get("band") == band), len(objs))
+
+    def newest_launch(objs: list[dict[str, Any]]) -> Optional[str]:
+        d = [parse_date(o.get("launch_date")) for o in objs]
+        d = [x for x in d if x is not None]
+        return max(d).isoformat() if d else None
+
+    def active_share(objs: list[dict[str, Any]]) -> int:
+        return _pct(sum(1 for o in objs if o.get("norad_cat_id") in active_by_norad), len(objs))
+
+    out: list[dict[str, Any]] = []
+
+    out.append(
+        {
+            "id": "starlink",
+            "title": "Starlink",
+            "short_description": f"Starlink accounts for {len(starlink):,} tracked payloads in this catalog snapshot.",
+            "total_count": len(starlink),
+            "growth_line": growth_line_from_launch_dates(starlink),
+            "key_facts": list(
+                filter(
+                    None,
+                    [
+                        f"{orbit_band_share(starlink, 'LEO')}% are in LEO." if starlink else None,
+                        f"{active_share(starlink)}% are currently active (Space-Track gp)." if starlink else None,
+                    ],
+                )
+            )[:2],
+        }
+    )
+
+    out.append(
+        {
+            "id": "gps",
+            "title": "GPS",
+            "short_description": f"GPS/NAVSTAR satellites total {len(gps):,} payloads in this snapshot.",
+            "total_count": len(gps),
+            "growth_line": growth_line_from_launch_dates(gps),
+            "key_facts": list(
+                filter(
+                    None,
+                    [
+                        f"Newest GPS launch: {newest_launch(gps)}." if newest_launch(gps) else None,
+                        f"{orbit_band_share(gps, 'MEO')}% are in MEO." if gps else None,
+                    ],
+                )
+            )[:2],
+        }
+    )
+
+    out.append(
+        {
+            "id": "weather",
+            "title": "Weather satellites",
+            "short_description": f"Weather and meteorology missions total {len(weather):,} payloads in this snapshot.",
+            "total_count": len(weather),
+            "growth_line": growth_line_from_launch_dates(weather),
+            "key_facts": list(
+                filter(
+                    None,
+                    [
+                        f"Newest weather launch: {newest_launch(weather)}." if newest_launch(weather) else None,
+                        f"{orbit_band_share(weather, 'LEO')}% are in LEO." if weather else None,
+                    ],
+                )
+            )[:2],
+        }
+    )
+
+    out.append(
+        {
+            "id": "stations",
+            "title": "Stations",
+            "short_description": f"Station-class objects total {len(stations):,} payloads in this snapshot.",
+            "total_count": len(stations),
+            "growth_line": growth_line_from_launch_dates(stations),
+            "key_facts": list(
+                filter(
+                    None,
+                    [
+                        f"{orbit_band_share(stations, 'LEO')}% are in LEO." if stations else None,
+                        f"Newest station launch: {newest_launch(stations)}." if newest_launch(stations) else None,
+                    ],
+                )
+            )[:2],
+        }
+    )
+
+    debris_pct = _pct(len(debris), total_objects)
+    out.append(
+        {
+            "id": "debris",
+            "title": "Debris problem",
+            "short_description": f"Debris totals {len(debris):,} objects ({debris_pct}% of {total_objects:,} tracked).",
+            "total_count": len(debris),
+            "growth_line": growth_line_from_launch_dates(debris),
+            "key_facts": list(
+                filter(
+                    None,
+                    [
+                        f"{orbit_band_share(debris, 'LEO')}% of debris is in LEO." if debris else None,
+                        f"Payloads vs debris: {total_payloads:,} payloads, {len(debris):,} debris objects.",
+                    ],
+                )
+            )[:2],
+        }
+    )
+
+    return out
+
 def build_space_track_insights(
     *,
     gp_rows: list[dict[str, Any]],
@@ -540,6 +780,7 @@ def build_space_track_insights(
             "highest_orbit": highest,
             "lowest_active_orbit": lowest_active,
         },
+        "deep_dives": deep_dives_section(objects=objects, active_objects=active_objects),
         "breakdowns": {
             "by_orbit": by_orbit,
             "by_category": labeled_top_counts(Counter(obj["category_key"] for obj in objects), labeler=category_label, limit=8),

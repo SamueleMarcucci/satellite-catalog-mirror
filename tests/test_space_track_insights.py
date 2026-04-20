@@ -123,6 +123,11 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertIn({"key": "payload", "label": "Payload", "count": 3}, insights["breakdowns"]["by_category"])
         self.assertIn({"key": "CIS", "label": "Commonwealth of Independent States", "count": 1}, insights["breakdowns"]["by_country"])
         self.assertIn("active_vs_debris", insights["trends"])
+        self.assertIn("deep_dives", insights)
+        dives = {row["id"]: row for row in insights["deep_dives"]}
+        self.assertEqual(dives["starlink"]["total_count"], 2)
+        self.assertEqual(dives["stations"]["total_count"], 1)
+        self.assertEqual(dives["debris"]["total_count"], 0)
 
         self.assertEqual(snapshot["timestamp"], "2026-04-19T12:00:00Z")
         self.assertEqual(snapshot["launches_today_count"], 0)
