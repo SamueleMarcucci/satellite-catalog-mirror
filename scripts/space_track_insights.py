@@ -142,6 +142,23 @@ def parse_date(value: Any) -> Optional[date]:
     except ValueError:
         return None
 
+def parse_datetime_utc(value: Any) -> Optional[datetime]:
+    """Parse Space-Track-style timestamps into an aware UTC datetime."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    token = text.replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(token)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 
 def clean_string(value: Any) -> Optional[str]:
     if value is None:
@@ -273,7 +290,9 @@ def normalize_object(
 ) -> dict[str, Any]:
     perigee, apogee, mean_altitude = orbital_altitudes_km(gp, satcat)
     launch_date = parse_date((satcat or {}).get("LAUNCH_DATE") or (gp or {}).get("LAUNCH_DATE"))
-    decay_date = parse_date((decay or {}).get("DECAY_EPOCH") or (decay or {}).get("DECAY_DATE") or (satcat or {}).get("DECAY_DATE"))
+    decay_epoch = parse_datetime_utc((decay or {}).get("DECAY_EPOCH") or (decay or {}).get("DECAY_DATE"))
+    decay_date = parse_date(decay_epoch or (decay or {}).get("DECAY_EPOCH") or (decay or {}).get("DECAY_DATE") or (satcat or {}).get("DECAY_DATE"))
+    last_orbit_epoch = parse_datetime_utc((gp or {}).get("EPOCH") or (gp or {}).get("epoch"))
     inclination = parse_float((gp or {}).get("INCLINATION") or (satcat or {}).get("INCLINATION"))
     mean_motion = parse_float((gp or {}).get("MEAN_MOTION"))
     category_key = normalized_category(gp, satcat)
@@ -291,6 +310,8 @@ def normalize_object(
         "operator": country_label(operator_key),
         "launch_date": launch_date.isoformat() if launch_date else None,
         "decay_date": decay_date.isoformat() if decay_date else None,
+        "decay_epoch": isoformat_z(decay_epoch) if decay_epoch else None,
+        "last_orbit_epoch": isoformat_z(last_orbit_epoch) if last_orbit_epoch else None,
         "orbit": {
             "band": orbit_band(perigee, apogee, mean_altitude),
             "perigee_km": round(perigee, 1) if perigee is not None else None,
