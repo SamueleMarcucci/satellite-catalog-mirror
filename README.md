@@ -11,7 +11,7 @@ This standalone project mirrors public Space-Track GP/TLE data into a static cat
 - Publishes `manifest.json`, `current.3le`, and `current.3le.gz` to Cloudflare R2.
 - Builds server-assisted position snapshots from the mirrored TLE catalog.
 - Publishes `snapshots/manifest.json`, `snapshots/current.json`, and `snapshots/current.json.gz`.
-- Builds Space-Track-only metadata insights from `gp`, `satcat`, `decay`, and optional `satcat_debut`.
+- Builds Space-Track metadata insights from `gp`, `gp_history`, `satcat`, `satcat_debut`, `satcat_change`, `decay`, `tip`, `boxscore`, `cdm_public`, and debug `tle`.
 - Publishes `insights/manifest.json`, `insights/current.json`, `insights/current.json.gz`, plus **`insights/history.json`** (append-only trend snapshots) and **`insights/history.json.gz`**.
 - Serves the files through a tiny Cloudflare Worker.
 
@@ -80,6 +80,8 @@ SPACE_TRACK_PASSWORD="..." \
 python scripts/build_insights.py --dry-run --output-dir public/insights
 ```
 
-The insights pipeline caches raw Space-Track JSON under `build/insights/cache` by default and reuses it for 23 hours unless `--force-refresh` is passed. The live app-facing artifact is **`public/insights/current.json`** (today, upcoming, highlights, breakdowns). Each successful run also downloads the prior **`history.json`** from R2 (if any), appends one snapshot, trims to **`INSIGHTS_HISTORY_MAX_SNAPSHOTS`** (default 2500), and writes **`public/insights/history.json`** for trend charts (launches/reentries today counts, active vs debris, orbit bands, constellation counts). Dry runs merge against a local `history.json` in the output folder when present.
+The insights pipeline caches raw Space-Track JSON under `build/insights/cache` by default and reuses it for up to 23 hours unless `--force-refresh` is passed. Fast-changing classes have tighter caps: `gp`/`tle` at 1 hour, `gp_history` at 6 hours, and `cdm_public` at 8 hours. The live app-facing artifact is **`public/insights/current.json`** (today, upcoming, highlights, breakdowns, expanded feeds, country boxscore, and a `data_inventory` field contract). Each successful run also downloads the prior **`history.json`** from R2 (if any), appends one snapshot, trims to **`INSIGHTS_HISTORY_MAX_SNAPSHOTS`** (default 2500), and writes **`public/insights/history.json`** for trend charts (launches/reentries today counts, active vs debris, orbit bands, constellation counts). Dry runs merge against a local `history.json` in the output folder when present.
+
+Space-Track request cadence is kept below the published ceiling of 30 requests/minute and 300 requests/hour. The scheduled insights workflow runs daily, while the separate GP/TLE catalog mirror runs hourly.
 
 Do not commit credentials.

@@ -19,6 +19,105 @@ SECONDS_PER_DAY = 86400.0
 INSIGHTS_HISTORY_SCHEMA_VERSION = 1
 INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT = 2500
 
+SPACE_TRACK_DATASETS: dict[str, dict[str, Any]] = {
+    "gp": {
+        "cadence": "hourly",
+        "required": True,
+        "fields": [
+            "OBJECT_NAME", "OBJECT_ID", "NORAD_CAT_ID", "CLASSIFICATION_TYPE", "EPOCH",
+            "ELEMENT_SET_NO", "REV_AT_EPOCH", "BSTAR", "MEAN_MOTION_DOT", "MEAN_MOTION_DDOT",
+            "SEMIMAJOR_AXIS", "PERIOD", "APOAPSIS", "PERIAPSIS", "OBJECT_TYPE",
+            "RCS_SIZE", "COUNTRY_CODE", "LAUNCH_DATE", "SITE", "DECAY_DATE", "GP_ID",
+            "CCSDS_OMM_VERS", "COMMENT", "CREATION_DATE", "ORIGINATOR", "CENTER_NAME",
+            "REF_FRAME", "TIME_SYSTEM", "MEAN_ELEMENT_THEORY",
+        ],
+    },
+    "gp_history": {
+        "cadence": "daily recent-window",
+        "required": False,
+        "fields": [
+            "OBJECT_NAME", "OBJECT_ID", "NORAD_CAT_ID", "CLASSIFICATION_TYPE", "EPOCH",
+            "CREATION_DATE", "ELEMENT_SET_NO", "REV_AT_EPOCH", "BSTAR", "MEAN_MOTION",
+            "MEAN_MOTION_DOT", "MEAN_MOTION_DDOT", "SEMIMAJOR_AXIS", "PERIOD",
+            "APOAPSIS", "PERIAPSIS", "OBJECT_TYPE", "RCS_SIZE",
+        ],
+    },
+    "satcat": {
+        "cadence": "daily",
+        "required": True,
+        "fields": [
+            "INTLDES", "NORAD_CAT_ID", "OBJECT_TYPE", "SATNAME", "COUNTRY", "LAUNCH",
+            "SITE", "DECAY", "PERIOD", "INCLINATION", "APOGEE", "PERIGEE", "COMMENT",
+            "COMMENTCODE", "RCSVALUE", "RCS_SIZE", "FILE", "LAUNCH_YEAR", "LAUNCH_NUM",
+            "LAUNCH_PIECE", "CURRENT", "OBJECT_NAME", "OBJECT_ID", "OBJECT_NUMBER",
+        ],
+    },
+    "satcat_debut": {
+        "cadence": "daily",
+        "required": False,
+        "fields": [
+            "DEBUT", "OBJECT_NAME", "OBJECT_ID", "NORAD_CAT_ID", "COUNTRY", "LAUNCH",
+            "SITE", "DECAY", "APOGEE", "PERIGEE", "RCS_SIZE", "CURRENT",
+        ],
+    },
+    "satcat_change": {
+        "cadence": "daily",
+        "required": False,
+        "fields": [
+            "NORAD_CAT_ID", "CURRENT_NAME", "PREVIOUS_NAME", "CURRENT_INTLDES",
+            "PREVIOUS_INTLDES", "CURRENT_COUNTRY", "PREVIOUS_COUNTRY", "CURRENT_LAUNCH",
+            "PREVIOUS_LAUNCH", "CURRENT_DECAY", "PREVIOUS_DECAY", "CHANGE_MADE",
+        ],
+    },
+    "decay": {
+        "cadence": "daily",
+        "required": True,
+        "fields": [
+            "NORAD_CAT_ID", "OBJECT_NUMBER", "OBJECT_NAME", "INTLDES", "OBJECT_ID",
+            "RCS", "RCS_SIZE", "COUNTRY", "MSG_EPOCH", "DECAY_EPOCH", "SOURCE",
+            "MSG_TYPE", "PRECEDENCE",
+        ],
+    },
+    "tip": {
+        "cadence": "daily",
+        "required": False,
+        "fields": [
+            "NORAD_CAT_ID", "MSG_EPOCH", "INSERT_EPOCH", "DECAY_EPOCH", "WINDOW", "REV",
+            "DIRECTION", "LAT", "LON", "INCL", "NEXT_REPORT", "ID", "HIGH_INTEREST",
+            "OBJECT_NUMBER",
+        ],
+    },
+    "boxscore": {
+        "cadence": "daily",
+        "required": False,
+        "fields": [
+            "COUNTRY", "SPADOC_CD", "ORBITAL_TBA", "ORBITAL_PAYLOAD_COUNT",
+            "ORBITAL_ROCKET_BODY_COUNT", "ORBITAL_DEBRIS_COUNT", "ORBITAL_TOTAL_COUNT",
+            "DECAYED_PAYLOAD_COUNT", "DECAYED_ROCKET_BODY_COUNT", "DECAYED_DEBRIS_COUNT",
+            "DECAYED_TOTAL_COUNT", "COUNTRY_TOTAL",
+        ],
+    },
+    "cdm_public": {
+        "cadence": "3/day all, hourly per event",
+        "required": False,
+        "fields": [
+            "CDM_ID", "CREATED", "EMERGENCY_REPORTABLE", "TCA", "MIN_RNG", "PC",
+            "SAT_1_ID", "SAT_2_ID", "SAT_1_NAME", "SAT_2_NAME", "SAT1_OBJECT_TYPE",
+            "SAT2_OBJECT_TYPE", "SAT1_RCS", "SAT2_RCS",
+        ],
+    },
+    "tle": {
+        "cadence": "hourly debug/validation",
+        "required": False,
+        "fields": [
+            "NORAD_CAT_ID", "OBJECT_NAME", "DECAYED", "EPOCH", "TLE_LINE0", "TLE_LINE1",
+            "TLE_LINE2", "INCLINATION", "MEAN_MOTION", "SEMIMAJOR_AXIS", "PERIOD",
+            "APOAPSIS", "PERIAPSIS", "OBJECT_TYPE", "CLASSIFICATION_TYPE", "BSTAR",
+            "MEAN_MOTION_DOT", "MEAN_MOTION_DDOT",
+        ],
+    },
+}
+
 CATEGORY_LABELS = {
     "payload": "Payload",
     "rocket_body": "Rocket Body",
@@ -338,6 +437,34 @@ def labeled_top_counts(counter: Counter[str], *, labeler, limit: int = 12) -> li
 def country_top_counts(values: list[str], *, limit: int = 20) -> list[dict[str, Any]]:
     counter = Counter(value for value in values if is_known_country_key(value))
     return labeled_top_counts(counter, labeler=country_label, limit=limit)
+
+
+def dataset_inventory(row_counts: dict[str, int]) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for class_name, metadata in SPACE_TRACK_DATASETS.items():
+        inventory.append(
+            {
+                "class": class_name,
+                "cadence": metadata["cadence"],
+                "required": bool(metadata["required"]),
+                "row_count": int(row_counts.get(class_name, 0)),
+                "fields": list(metadata["fields"]),
+            }
+        )
+    return inventory
+
+
+def latest_rows(rows: list[dict[str, Any]], *date_fields: str, limit: int = 25) -> list[dict[str, Any]]:
+    def sort_key(row: dict[str, Any]) -> tuple[str, int]:
+        stamp = ""
+        for field in date_fields:
+            value = clean_string(row.get(field))
+            if value:
+                stamp = value
+                break
+        return (stamp, norad_id(row) or 0)
+
+    return sorted(rows, key=sort_key, reverse=True)[:limit]
 
 
 def build_history_snapshot(
@@ -702,6 +829,12 @@ def build_space_track_insights(
     satcat_rows: list[dict[str, Any]],
     decay_rows: list[dict[str, Any]],
     satcat_debut_rows: Optional[list[dict[str, Any]]] = None,
+    gp_history_rows: Optional[list[dict[str, Any]]] = None,
+    satcat_change_rows: Optional[list[dict[str, Any]]] = None,
+    tip_rows: Optional[list[dict[str, Any]]] = None,
+    boxscore_rows: Optional[list[dict[str, Any]]] = None,
+    cdm_public_rows: Optional[list[dict[str, Any]]] = None,
+    tle_rows: Optional[list[dict[str, Any]]] = None,
     today_launches: Optional[list[dict[str, Any]]] = None,
     upcoming_launches: Optional[list[dict[str, Any]]] = None,
     generated_at: Optional[datetime] = None,
@@ -712,6 +845,12 @@ def build_space_track_insights(
     gp_by_norad = {value: row for row in gp_rows if (value := norad_id(row)) is not None}
     satcat_by_norad = {value: row for row in satcat_rows if (value := norad_id(row)) is not None}
     decay_by_norad = {value: row for row in decay_rows if (value := norad_id(row)) is not None}
+    tip_rows = tip_rows or []
+    boxscore_rows = boxscore_rows or []
+    cdm_public_rows = cdm_public_rows or []
+    satcat_change_rows = satcat_change_rows or []
+    gp_history_rows = gp_history_rows or []
+    tle_rows = tle_rows or []
 
     all_ids = sorted(set(gp_by_norad) | set(satcat_by_norad))
     objects = [
@@ -780,8 +919,16 @@ def build_space_track_insights(
         "last_updated": isoformat_z(generated_at),
         "source": {
             "name": "Space-Track.org",
-            "classes": ["gp", "satcat", "decay", "satcat_debut"],
+            "classes": list(SPACE_TRACK_DATASETS.keys()),
             "join_key": "NORAD_CAT_ID",
+            "api_limits": {
+                "requests_per_minute": 30,
+                "requests_per_hour": 300,
+                "gp_tle": "roughly 1/hour",
+                "boxscore": "roughly 1/day",
+                "decay": "roughly 1/day",
+                "cdm_public": "roughly 3/day for all constellation CDMs or 1/hour for a specific event",
+            },
         },
         "today": {
             "launches": today_launches or [],
@@ -817,10 +964,38 @@ def build_space_track_insights(
             ],
             "busiest_orbit_band": by_orbit[:5],
         },
+        "feeds": {
+            "new_in_orbit": latest_rows(satcat_debut_rows or [], "DEBUT", "LAUNCH", "LAUNCH_DATE", limit=25),
+            "recent_catalog_changes": latest_rows(satcat_change_rows, "CHANGE_MADE", limit=25),
+            "reentry_warnings": latest_rows(tip_rows, "DECAY_EPOCH", "MSG_EPOCH", "INSERT_EPOCH", limit=25),
+            "close_approaches": latest_rows(cdm_public_rows, "TCA", "CREATED", limit=25),
+        },
+        "country_boxscore": latest_rows(boxscore_rows, "COUNTRY", limit=250),
+        "data_inventory": dataset_inventory(
+            {
+                "gp": len(gp_by_norad),
+                "gp_history": len(gp_history_rows),
+                "satcat": len(satcat_by_norad),
+                "satcat_debut": len(satcat_debut_rows or []),
+                "satcat_change": len(satcat_change_rows),
+                "decay": len(decay_by_norad),
+                "tip": len(tip_rows),
+                "boxscore": len(boxscore_rows),
+                "cdm_public": len(cdm_public_rows),
+                "tle": len(tle_rows),
+            }
+        ),
         "counts": {
             "gp": len(gp_by_norad),
+            "gp_history": len(gp_history_rows),
             "satcat": len(satcat_by_norad),
+            "satcat_debut": len(satcat_debut_rows or []),
+            "satcat_change": len(satcat_change_rows),
             "decay": len(decay_by_norad),
+            "tip": len(tip_rows),
+            "boxscore": len(boxscore_rows),
+            "cdm_public": len(cdm_public_rows),
+            "tle": len(tle_rows),
             "merged": len(objects),
         },
     }

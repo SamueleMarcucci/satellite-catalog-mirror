@@ -25,6 +25,7 @@ from scripts.mirror_spacetrack import (  # noqa: E402
 )
 from scripts.space_track_insights import (  # noqa: E402
     INSIGHTS_HISTORY_MAX_SNAPSHOTS_DEFAULT,
+    SPACE_TRACK_DATASETS,
     build_insights_manifest,
     build_space_track_insights,
     merge_insights_history,
@@ -36,9 +37,34 @@ from tle_mirror import utc_now  # noqa: E402
 
 SPACE_TRACK_JSON_QUERIES = {
     "gp": "/basicspacedata/query/class/gp/decay_date/null-val/epoch/%3Enow-10/orderby/NORAD_CAT_ID/format/json/emptyresult/show",
+    "gp_history": "/basicspacedata/query/class/gp_history/CREATION_DATE/%3Enow-7/orderby/NORAD_CAT_ID,EPOCH%20desc/format/json/emptyresult/show",
     "satcat": "/basicspacedata/query/class/satcat/orderby/NORAD_CAT_ID/format/json/emptyresult/show",
     "decay": "/basicspacedata/query/class/decay/orderby/DECAY_EPOCH%20desc/format/json/emptyresult/show",
     "satcat_debut": "/basicspacedata/query/class/satcat_debut/orderby/NORAD_CAT_ID%20desc/format/json/emptyresult/show",
+    "satcat_change": "/basicspacedata/query/class/satcat_change/orderby/CHANGE_MADE%20desc/format/json/emptyresult/show",
+    "tip": "/basicspacedata/query/class/tip/orderby/DECAY_EPOCH%20desc/format/json/emptyresult/show",
+    "boxscore": "/basicspacedata/query/class/boxscore/orderby/COUNTRY/format/json/emptyresult/show",
+    "cdm_public": "/basicspacedata/query/class/cdm_public/orderby/TCA%20asc/format/json/emptyresult/show",
+    "tle": "/basicspacedata/query/class/tle/decay_date/null-val/epoch/%3Enow-10/orderby/NORAD_CAT_ID/format/json/emptyresult/show",
+}
+
+OPTIONAL_SPACE_TRACK_CLASSES = tuple(
+    class_name
+    for class_name, metadata in SPACE_TRACK_DATASETS.items()
+    if not metadata.get("required")
+)
+
+SPACE_TRACK_CLASS_CACHE_HOURS = {
+    "gp": 1,
+    "tle": 1,
+    "gp_history": 6,
+    "cdm_public": 8,
+    "satcat": 23,
+    "decay": 23,
+    "satcat_debut": 23,
+    "satcat_change": 23,
+    "tip": 23,
+    "boxscore": 23,
 }
 
 
@@ -231,21 +257,21 @@ def main() -> int:
     space_track_login(session, config, timeout=args.timeout)
 
     fetched: dict[str, list[dict[str, Any]]] = {}
-    for class_name in ("gp", "satcat", "decay", "satcat_debut"):
+    for class_name in SPACE_TRACK_DATASETS:
         try:
             fetched[class_name] = load_or_fetch_rows(
                 session=session,
                 class_name=class_name,
                 cache_dir=cache_dir,
-                max_age_hours=args.cache_max_age_hours,
+                max_age_hours=min(args.cache_max_age_hours, SPACE_TRACK_CLASS_CACHE_HOURS.get(class_name, args.cache_max_age_hours)),
                 now=now,
                 timeout=args.timeout,
                 force_refresh=args.force_refresh,
             )
         except Exception:
-            if class_name != "satcat_debut":
+            if class_name not in OPTIONAL_SPACE_TRACK_CLASSES:
                 raise
-            print("Space-Track satcat_debut unavailable; continuing without optional debut enrichment.")
+            print(f"Space-Track {class_name} unavailable; continuing without optional enrichment.")
             fetched[class_name] = []
 
     launch_sections = {"today": [], "upcoming": []}
@@ -274,6 +300,12 @@ def main() -> int:
         satcat_rows=fetched["satcat"],
         decay_rows=fetched["decay"],
         satcat_debut_rows=fetched["satcat_debut"],
+        gp_history_rows=fetched["gp_history"],
+        satcat_change_rows=fetched["satcat_change"],
+        tip_rows=fetched["tip"],
+        boxscore_rows=fetched["boxscore"],
+        cdm_public_rows=fetched["cdm_public"],
+        tle_rows=fetched["tle"],
         today_launches=launch_sections["today"],
         upcoming_launches=launch_sections["upcoming"],
         generated_at=now,
@@ -311,9 +343,11 @@ def main() -> int:
         f"gp={insights['counts']['gp']} "
         f"satcat={insights['counts']['satcat']} "
         f"decay={insights['counts']['decay']} "
+        f"tip={insights['counts']['tip']} "
+        f"cdm_public={insights['counts']['cdm_public']} "
         f"merged={insights['counts']['merged']}"
     )
-    print("Fields used: NORAD_CAT_ID, OBJECT_NAME, OBJECT_ID, OBJECT_TYPE, OPS_STATUS_CODE, OWNER/COUNTRY, LAUNCH_DATE, DECAY_DATE/DECAY_EPOCH, PERIGEE/APOGEE, INCLINATION, MEAN_MOTION, ECCENTRICITY.")
+    print("Fields used: see data_inventory in current.json for the full Space-Track class/field contract.")
 
     if args.dry_run:
         print("Dry run complete; R2 upload skipped.")

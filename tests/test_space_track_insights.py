@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts.build_insights import normalize_insights_base_url
 from scripts.space_track_insights import (
+    SPACE_TRACK_DATASETS,
     build_insights_manifest,
     build_space_track_insights,
     merge_insights_history,
@@ -96,6 +97,38 @@ DECAY_ROWS = [
     }
 ]
 
+TIP_ROWS = [
+    {
+        "NORAD_CAT_ID": "90001",
+        "MSG_EPOCH": "2026-04-19T11:00:00",
+        "DECAY_EPOCH": "2026-04-19T14:00:00",
+        "WINDOW": "120",
+        "HIGH_INTEREST": "Y",
+    }
+]
+
+CDM_PUBLIC_ROWS = [
+    {
+        "CDM_ID": "123",
+        "CREATED": "2026-04-19T10:00:00",
+        "TCA": "2026-04-20T01:00:00",
+        "MIN_RNG": "0.12",
+        "PC": "0.00001",
+        "SAT_1_ID": "25544",
+        "SAT_2_ID": "44713",
+    }
+]
+
+BOXSCORE_ROWS = [
+    {
+        "COUNTRY": "US",
+        "SPADOC_CD": "US",
+        "ORBITAL_PAYLOAD_COUNT": "2",
+        "ORBITAL_TOTAL_COUNT": "3",
+        "COUNTRY_TOTAL": "4",
+    }
+]
+
 
 class SpaceTrackInsightsTests(unittest.TestCase):
     def test_builds_expected_app_insights_shape(self) -> None:
@@ -111,6 +144,11 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertEqual(insights["last_updated"], "2026-04-19T12:00:00Z")
         self.assertEqual(insights["counts"]["gp"], 3)
         self.assertEqual(insights["counts"]["satcat"], 4)
+        self.assertEqual(insights["counts"]["tip"], 0)
+        self.assertEqual(insights["source"]["classes"], list(SPACE_TRACK_DATASETS.keys()))
+        self.assertIn("api_limits", insights["source"])
+        self.assertIn("data_inventory", insights)
+        self.assertIn("feeds", insights)
         self.assertEqual(insights["highlights"]["biggest_constellation"]["name"], "STARLINK")
         self.assertEqual(insights["today"]["launches"], [])
         self.assertEqual(insights["upcoming"]["launches"], [])
@@ -136,6 +174,36 @@ class SpaceTrackInsightsTests(unittest.TestCase):
         self.assertEqual(snapshot["by_orbit"]["leo"], 3)
         self.assertEqual(snapshot["biggest_constellation"]["name"], "STARLINK")
         self.assertLessEqual(len(snapshot["top_constellations"]), 5)
+
+    def test_includes_expanded_space_track_feeds_and_inventory(self) -> None:
+        insights, _snapshot = build_space_track_insights(
+            gp_rows=GP_ROWS,
+            satcat_rows=SATCAT_ROWS,
+            decay_rows=DECAY_ROWS,
+            satcat_debut_rows=[{"NORAD_CAT_ID": "44714", "DEBUT": "2026-04-19T00:00:00", "OBJECT_NAME": "STARLINK-1009"}],
+            gp_history_rows=[{"NORAD_CAT_ID": "25544", "EPOCH": "2026-04-18T00:00:00"}],
+            satcat_change_rows=[{"NORAD_CAT_ID": "44713", "CURRENT_NAME": "STARLINK-1008", "CHANGE_MADE": "2026-04-19T01:00:00"}],
+            tip_rows=TIP_ROWS,
+            boxscore_rows=BOXSCORE_ROWS,
+            cdm_public_rows=CDM_PUBLIC_ROWS,
+            tle_rows=[{"NORAD_CAT_ID": "25544", "TLE_LINE1": "1 25544U"}],
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(insights["counts"]["gp_history"], 1)
+        self.assertEqual(insights["counts"]["satcat_debut"], 1)
+        self.assertEqual(insights["counts"]["satcat_change"], 1)
+        self.assertEqual(insights["counts"]["tip"], 1)
+        self.assertEqual(insights["counts"]["boxscore"], 1)
+        self.assertEqual(insights["counts"]["cdm_public"], 1)
+        self.assertEqual(insights["counts"]["tle"], 1)
+        self.assertEqual(insights["feeds"]["reentry_warnings"][0]["HIGH_INTEREST"], "Y")
+        self.assertEqual(insights["feeds"]["close_approaches"][0]["CDM_ID"], "123")
+        self.assertEqual(insights["country_boxscore"][0]["COUNTRY"], "US")
+        inventory_by_class = {item["class"]: item for item in insights["data_inventory"]}
+        self.assertIn("BSTAR", inventory_by_class["gp"]["fields"])
+        self.assertIn("WINDOW", inventory_by_class["tip"]["fields"])
+        self.assertEqual(inventory_by_class["cdm_public"]["row_count"], 1)
 
     def test_launch_sections_are_explicit_inputs_not_space_track_launch_dates(self) -> None:
         launch = {
